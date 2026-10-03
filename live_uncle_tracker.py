@@ -394,7 +394,16 @@ def _build_real_history() -> dict:
             price = float(row['Close'])
             high = float(row['High'])
             
-            if high >= h['target']:
+            buy_d = pd.to_datetime(h['buy_date'])
+            if (d - buy_d).days >= 90:
+                rev = h['qty'] * price
+                prof = rev - (h['qty'] * h['cost'])
+                cash += rev
+                pct = (price/h['cost']-1)*100
+                history.append(f"{d.strftime('%Y-%m-%d %H:%M')} | TIME | {t:<12} | Exit: ${price:.2f}  | P&L: ${prof:>+,.0f}  ({pct:+.1f}%)")
+                del holdings[t]
+                sold_this_day.add(t)
+            elif high >= h['target']:
                 rev = h['qty'] * h['target']
                 prof = rev - (h['qty'] * h['cost'])
                 cash += rev
@@ -527,6 +536,7 @@ with st.sidebar:
     st.markdown("## System Parameters")
     position_pct  = st.slider("Position Size (%)", 5, 50, 25) / 100
     trailing_stop = st.slider("Trailing Stop-Loss (%)", 5, 25, 12) / 100
+    time_stop_days = st.slider("Time Stop (Days)", 30, 365, 90)
 
     st.markdown("---")
     st.markdown("## Universe")
@@ -566,9 +576,9 @@ delta_arrow = "+" if total_pnl >= 0 else ""
 
 open_pos     = len(pf.get("holdings", {}))
 history      = pf.get("history", [])
-sell_trades  = [h for h in history if "| SELL |" in h or "SELL (" in h]
+sell_trades  = [h for h in history if "| SELL |" in h or "| STOP |" in h or "| TIME |" in h]
 num_trades   = len(sell_trades)
-win_trades   = len([h for h in sell_trades if "+$" in h or "(+" in h or "P&L: $+" in h])
+win_trades   = len([h for h in sell_trades if "P&L: $+" in h])
 win_rate     = f"{win_trades/num_trades*100:.0f}%" if num_trades else "—"
 
 st.markdown(f"""
@@ -674,7 +684,19 @@ if run_scan:
         # AUTO SELL
         if t in pf["holdings"]:
             h = pf["holdings"][t]
-            if data["price"] >= h["target"]:
+            buy_d_str = h.get("buy_date", "")[:10]
+            buy_d = datetime.strptime(buy_d_str, "%Y-%m-%d") if len(buy_d_str) >= 10 else datetime.now()
+            
+            if (datetime.now() - buy_d).days >= time_stop_days:
+                rev    = h["qty"] * data["price"]
+                profit = rev - (h["qty"] * h["cost"])
+                pf["cash"] += rev
+                pf["history"].append(
+                    f"{now_ts} | TIME | {t:<12} | Exit: ${data['price']:.2f}  | P&L: ${profit:>+,.0f}  ({(data['price']/h['cost']-1)*100:.1f}%)"
+                )
+                del pf["holdings"][t]
+                actions.append(("TIME", t, data["price"], profit))
+            elif data["price"] >= h["target"]:
                 rev    = h["qty"] * data["price"]
                 profit = rev - (h["qty"] * h["cost"])
                 pf["cash"] += rev
@@ -724,6 +746,8 @@ if run_scan:
                 st.success(f"Position opened — {t} at ${price:.2f}")
             elif action == "SELL":
                 st.success(f"Position closed — {t} at ${price:.2f}  |  P&L: ${profit:+,.0f}")
+            elif action == "TIME":
+                st.info(f"Time Stop (Expired) — {t} at ${price:.2f}  |  P&L: ${profit:+,.0f}")
             else:
                 st.warning(f"Stop-loss triggered — {t} at ${price:.2f}  |  P&L: ${profit:+,.0f}")
     else:
@@ -804,7 +828,7 @@ with right:
                 side_clean = side_p.strip()
                 if side_clean == "BUY":
                     scls = "trade-buy"
-                elif side_clean in ("SELL", "SATIŞ"):
+                elif side_clean in ("SELL", "SATIŞ", "TIME"):
                     scls = "trade-sell"
                 else:
                     scls = "trade-stop"
