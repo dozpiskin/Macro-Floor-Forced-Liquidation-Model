@@ -317,7 +317,7 @@ def load_portfolio() -> dict:
     except Exception:
         pass
     if "ram_pf" not in st.session_state:
-        st.session_state.ram_pf = _init_with_history()
+        st.session_state.ram_pf = _build_real_history()
     return st.session_state.ram_pf
 
 def save_portfolio(pf: dict):
@@ -327,64 +327,122 @@ def save_portfolio(pf: dict):
         st.session_state.ram_pf = pf
 
 # ── Synthetic 5-year history generator ───────────────────────────────────────
-def _init_with_history() -> dict:
+def _build_real_history() -> dict:
     """
-    Creates a realistic 5-year simulated trade log to reflect
-    historical system performance since inception.
+    Runs a real 5-year backtest on the DEFAULT_TICKERS universe to 
+    reconstruct the exact portfolio state and history the model 
+    would have generated over the last 5 years.
     """
-    rng = random.Random(2019)
-    start = datetime(2019, 10, 1)
+    tr_10y = 0.33
+    total_prem = 0.0525 + 0.025 + 0.10  # US 10Y + CDS + Local
+
+    dfs = {}
+    for t in DEFAULT_TICKERS:
+        try:
+            df = yf.download(t, period="5y", progress=False)
+            if df.empty: continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.dropna(subset=['Close'])
+            if len(df) < 252: continue
+            
+            df['Rolling_Base'] = df['Low'].rolling(252, min_periods=252).min()
+            df['Bond_FV'] = df['Rolling_Base'] * (1 + tr_10y)
+            df['Bank_Bot'] = df['Bond_FV'] * (1 + total_prem)
+            
+            close = df['Close'].values.astype(float)
+            opn = df['Open'].values.astype(float)
+            high = df['High'].values.astype(float)
+            
+            prev_close = np.roll(close, 1); prev_close[0] = np.nan
+            cond1 = (close < df['Bond_FV'].values) & (close < df['Bank_Bot'].values)
+            bearish = (high > opn) & (close < prev_close) & (close < opn)
+            b_prev = np.roll(bearish, 1); b_prev[0] = False
+            
+            df['Signal'] = cond1 & bearish & b_prev
+            dfs[t] = df
+        except Exception:
+            pass
+
+    all_dates = set()
+    for df in dfs.values():
+        all_dates.update(df.index.tolist())
+    sorted_dates = sorted(list(all_dates))
+
+    cash = 100_000.0
+    holdings = {}
     history = []
-    capital = 100_000.0
+    position_pct = 0.25
+    trailing_stop = 0.12
 
-    # Representative historical trades the system would have made
-    sim_trades = [
-        ("2020-03-18", "BUY",  "AAPL",  56.09,   None,     None),
-        ("2020-06-05", "SELL", "AAPL",  80.46,   21844.0,  "+43.4%"),
-        ("2020-03-23", "BUY",  "TSLA",  109.32,  None,     None),
-        ("2020-09-01", "SELL", "TSLA",  498.32,  88983.0,  "+355.8%"),
-        ("2020-10-29", "BUY",  "NVDA",  131.38,  None,     None),
-        ("2021-03-12", "SELL", "NVDA",  538.65,  77660.0,  "+309.9%"),
-        ("2021-05-19", "BUY",  "THYAO.IS", 14.22, None,   None),
-        ("2021-09-08", "SELL","THYAO.IS",19.87,  14438.0,  "+39.7%"),
-        ("2022-06-16", "BUY",  "MSFT",  241.51,  None,     None),
-        ("2022-11-04", "SELL","MSFT",   221.30,  -5245.0,  "-8.4%"),
-        ("2022-10-13", "BUY",  "AMZN",  86.14,   None,     None),
-        ("2023-02-03", "SELL","AMZN",   117.43,  18088.0,  "+36.3%"),
-        ("2023-04-14", "BUY",  "META",  218.71,  None,     None),
-        ("2023-08-01", "SELL","META",   326.49,  30958.0,  "+49.3%"),
-        ("2023-10-26", "BUY",  "AKBNK.IS", 22.14, None,   None),
-        ("2024-01-19", "SELL","AKBNK.IS",31.88,  13946.0,  "+44.0%"),
-        ("2024-03-07", "BUY",  "NVDA",  788.17,  None,     None),
-        ("2024-06-20", "SELL","NVDA",   1208.88, 26662.0,  "+53.4%"),
-        ("2024-09-03", "BUY",  "AAPL",  222.77,  None,     None),
-        ("2024-11-15", "SELL","AAPL",   229.87,  1595.0,   "+3.2%"),
-        ("2025-01-27", "BUY",  "TSLA",  364.99,  None,     None),
-        ("2025-03-11", "SELL","TSLA",   268.42,  -13265.0, "-26.5%"),
-        ("2025-04-07", "BUY",  "AMZN",  168.59,  None,     None),
-        ("2025-07-14", "SELL","AMZN",   222.35,  15953.0,  "+31.9%"),
-    ]
+    for d in sorted_dates:
+        # Calculate current equity for position sizing
+        h_val = 0.0
+        for t, h in holdings.items():
+            if d in dfs[t].index:
+                h_val += h['qty'] * float(dfs[t].loc[d, 'Close'])
+            else:
+                h_val += h['qty'] * h['cost']
+        
+        equity = cash + h_val
 
-    for t in sim_trades:
-        date_str, action, ticker, price, profit, pct = t
-        if action == "BUY":
-            history.append(
-                f"{date_str} | BUY  | {ticker:<12} | Entry: ${price:.2f}"
-            )
-        else:
-            pnl_str = f"P&L: ${profit:>+,.0f}  ({pct})"
-            history.append(
-                f"{date_str} | SELL | {ticker:<12} | Exit:  ${price:.2f}  | {pnl_str}"
-            )
-            if profit:
-                capital += profit
+        # Exits
+        sold_this_day = set()
+        for t, h in list(holdings.items()):
+            if d not in dfs[t].index: continue
+            row = dfs[t].loc[d]
+            price = float(row['Close'])
+            high = float(row['High'])
+            
+            if high >= h['target']:
+                rev = h['qty'] * h['target']
+                prof = rev - (h['qty'] * h['cost'])
+                cash += rev
+                pct = (h['target']/h['cost']-1)*100
+                history.append(f"{d.strftime('%Y-%m-%d %H:%M')} | SELL | {t:<12} | Exit: ${h['target']:.2f}  | P&L: ${prof:>+,.0f}  ({pct:+.1f}%)")
+                del holdings[t]
+                sold_this_day.add(t)
+            elif price <= h['trailing_high'] * (1 - trailing_stop):
+                rev = h['qty'] * price
+                prof = rev - (h['qty'] * h['cost'])
+                cash += rev
+                pct = (price/h['cost']-1)*100
+                history.append(f"{d.strftime('%Y-%m-%d %H:%M')} | STOP | {t:<12} | Exit: ${price:.2f}  | P&L: ${prof:>+,.0f}  ({pct:+.1f}%)")
+                del holdings[t]
+                sold_this_day.add(t)
+            else:
+                holdings[t]['trailing_high'] = max(holdings[t]['trailing_high'], high)
+
+        # Entries
+        for t, df in dfs.items():
+            if t in holdings or t in sold_this_day: continue
+            if d not in df.index: continue
+            
+            row = df.loc[d]
+            if bool(row['Signal']):
+                invest = equity * position_pct
+                if cash >= invest and invest >= 100:
+                    price = float(row['Close'])
+                    if pd.isna(row['Bond_FV']) or pd.isna(price): continue
+                    target = max(float(row['Bond_FV']), price * 1.25)
+                    qty = invest / price
+                    
+                    cash -= invest
+                    holdings[t] = {
+                        'qty': qty,
+                        'cost': price,
+                        'target': target,
+                        'trailing_high': price,
+                        'buy_date': d.strftime('%Y-%m-%d %H:%M')
+                    }
+                    history.append(f"{d.strftime('%Y-%m-%d %H:%M')} | BUY  | {t:<12} | Entry: ${price:.2f} | Target: ${target:.2f}")
 
     return {
         "_id": "main_fund",
-        "cash": round(capital, 2),
-        "holdings": {},
+        "cash": round(cash, 2),
+        "holdings": holdings,
         "history": history,
-        "inception": "2019-10-01",
+        "inception": sorted_dates[0].strftime('%Y-%m-%d') if sorted_dates else "2019-10-01"
     }
 
 # ── Live Macro ────────────────────────────────────────────────────────────────
@@ -478,8 +536,9 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("## System")
     st.markdown(f"<div style='font-size:0.7rem;color:#2d3748;line-height:1.8'>Inception: {inception}<br>Engine: V3.0<br>Universe: {len(tickers)} instruments</div>", unsafe_allow_html=True)
-    if st.button("Reset to $100K"):
-        save_portfolio(_init_with_history())
+    if st.button("Reset to $100K & Re-run 5Y Backtest"):
+        with st.spinner("Downloading 5 years of market data and reconstructing portfolio... (Takes ~15 secs)"):
+            save_portfolio(_build_real_history())
         st.rerun()
 
 # ════════════════════════════════════════════════════════════════════════════
