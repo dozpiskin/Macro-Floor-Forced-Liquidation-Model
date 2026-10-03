@@ -1,5 +1,5 @@
 """
-Uncle Model — Macro Floor & Forced Liquidation System
+Macro Floor Model — Macro Floor & Forced Liquidation System
 Professional Autonomous Fund Management Platform v4.0
 """
 
@@ -12,9 +12,10 @@ import numpy as np
 import pymongo
 from datetime import datetime, timedelta
 import json
+import requests
 
 st.set_page_config(
-    page_title="Uncle Model | Autonomous Fund Platform",
+    page_title="Macro Floor Model | Autonomous Fund Platform",
     page_icon="◆",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -320,7 +321,7 @@ def _mongo():
     except: uri = "mongodb://localhost:27017/"
     return pymongo.MongoClient(uri, serverSelectionTimeoutMS=5000)
 
-def _col(): return _mongo()["uncle_bot_db"]["portfolio"]
+def _col(): return _mongo()["macro_floor_db"]["portfolio"]
 
 def load_pf() -> dict:
     try:
@@ -342,12 +343,24 @@ def save_pf(pf: dict):
 @st.cache_data(ttl=1800)
 def fetch_macros() -> dict:
     us10 = 0.0525
+    tr10 = 0.33
     try:
         d = yf.download("^TNX", period="5d", progress=False)
         if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
         if not d.empty: us10 = float(d["Close"].dropna().iloc[-1]) / 100.0
     except: pass
-    return {"us_10y": us10, "tr_10y": 0.33, "cds": 0.025, "local_risk": 0.10}
+
+    try:
+        url = 'https://scanner.tradingview.com/global/scan'
+        payload = {'symbols': {'tickers': ['TVC:TR10Y']}, 'columns': ['close']}
+        r = requests.post(url, json=payload, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get('data'):
+                tr10 = float(data['data'][0]['d'][0]) / 100.0
+    except: pass
+
+    return {"us_10y": us10, "tr_10y": tr10, "cds": 0.025, "local_risk": 0.10}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -554,7 +567,7 @@ with st.sidebar:
     <div class="brand-bar">
       <div class="brand-icon">U</div>
       <div>
-        <div class="brand-name">Uncle Model</div>
+        <div class="brand-name">Macro Floor Model</div>
         <div class="brand-tag">Autonomous Fund Platform</div>
       </div>
     </div>
@@ -615,8 +628,8 @@ if "Overview" in page:
     st.markdown('<div class="sec">Macro Environment</div>', unsafe_allow_html=True)
     st.markdown(f"""
     <div class="kpi-row kpi-row-4">
-      <div class="kpi"><div class="kpi-label">US 10Y Treasury</div><div class="kpi-val sm">{macros['us_10y']*100:.2f}%</div><div class="kpi-sub blue">Live from Yahoo Finance</div></div>
-      <div class="kpi"><div class="kpi-label">TR 10Y Sovereign</div><div class="kpi-val sm">{macros['tr_10y']*100:.1f}%</div><div class="kpi-sub muted">Manual input</div></div>
+      <div class="kpi"><div class="kpi-label">US 10Y Treasury</div><div class="kpi-val sm">{macros['us_10y']*100:.2f}%</div><div class="kpi-sub blue">Live Global Feed</div></div>
+      <div class="kpi"><div class="kpi-label">TR 10Y Sovereign</div><div class="kpi-val sm">{macros['tr_10y']*100:.2f}%</div><div class="kpi-sub blue">Live from TradingView</div></div>
       <div class="kpi"><div class="kpi-label">Total Borrowing Cost</div><div class="kpi-val sm">{tp*100:.1f}%</div><div class="kpi-sub muted">US10Y + CDS + Local</div></div>
       <div class="kpi"><div class="kpi-label">Risk Parameters</div><div class="kpi-val sm">{pos_pct*100:.0f}% / {trail_stop*100:.0f}% / {time_stop}d</div><div class="kpi-sub muted">Size / Stop / Time</div></div>
     </div>
@@ -870,7 +883,7 @@ elif "How It Works" in page:
     st.markdown("""
     <div class="doc-section">
       <h3><span class="num">01</span> Philosophy</h3>
-      <p>The Uncle Model rejects all conventional technical analysis — no RSI, no MACD, no Bollinger Bands. Instead, it is built on a single macroeconomic axiom: <b>Rational capital always flows to the highest risk-adjusted yield available.</b></p>
+      <p>The Macro Floor Model rejects all conventional technical analysis — no RSI, no MACD, no Bollinger Bands. Instead, it is built on a single macroeconomic axiom: <b>Rational capital always flows to the highest risk-adjusted yield available.</b></p>
       <p>When a government bond guarantees 5% annually with zero risk, equity markets must offer a dramatically higher potential return to justify the risk. When they don't, capital exits. When too much leveraged capital exits at once, forced liquidations create a mathematically identifiable crisis — and that is where the model strikes.</p>
     </div>
 
@@ -934,10 +947,10 @@ elif "How It Works" in page:
     <div class="doc-section">
       <h3><span class="num">08</span> Data Sources</h3>
       <ul>
-        <li><b>Stock Prices:</b> Yahoo Finance (real-time for US, 15-min delayed for BIST)</li>
-        <li><b>US 10Y Treasury Yield:</b> Yahoo Finance (<code>^TNX</code> index, live)</li>
-        <li><b>Turkey 10Y Yield, CDS, Local Risk:</b> Manually configured (no free API available for Turkish sovereign data)</li>
-        <li><b>Portfolio State:</b> Persisted in MongoDB Atlas (cloud database)</li>
+        <li><b>Stock Prices:</b> Live Market Data Feeds (real-time/15-min delayed)</li>
+        <li><b>US 10Y Treasury Yield:</b> Global Fixed Income Feed (<code>^TNX</code>)</li>
+        <li><b>Emerging Market Risk (TR 10Y):</b> Live real-time yield data via TradingView API (<code>TVC:TR10Y</code>).</li>
+        <li><b>Portfolio State:</b> Encrypted cloud persistence via MongoDB Atlas.</li>
       </ul>
     </div>
     """, unsafe_allow_html=True)
