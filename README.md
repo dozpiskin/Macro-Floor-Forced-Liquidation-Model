@@ -1,4 +1,4 @@
-# Algorithmic Valuation & Liquidity Crisis Engine
+# Uncle Model — Algorithmic Valuation & Liquidity Crisis Engine
 
 An autonomous quantitative trading bot that detects **macro-economic crisis bottoms** by comparing stock prices against their opportunity-cost floors (government bond yields, inflation, FX carry, sovereign borrowing costs) and waits for **margin-call exhaustion signals** before entering positions.
 
